@@ -13,6 +13,9 @@
 (define-constant err-milestone-exists (err u107))
 (define-constant err-invalid-participant (err u108))
 (define-constant err-already-verified (err u109))
+(define-constant err-dispute-exists (err u110))
+(define-constant err-dispute-not-found (err u111))
+(define-constant err-dispute-resolved (err u112))
 
 (define-data-var shipment-id-nonce uint u0)
 
@@ -69,6 +72,19 @@
   }
 )
 
+(define-map shipment-disputes
+  uint
+  {
+    raised-by: principal,
+    reason: (string-ascii 500),
+    raised-at: uint,
+    resolved: bool,
+    resolution: (optional (string-ascii 500)),
+    resolved-at: (optional uint),
+    resolved-by: (optional principal)
+  }
+)
+
 (define-read-only (get-shipment (shipment-id uint))
   (map-get? shipments shipment-id)
 )
@@ -99,6 +115,10 @@
 
 (define-read-only (get-last-shipment-id)
   (ok (var-get shipment-id-nonce))
+)
+
+(define-read-only (get-dispute (shipment-id uint))
+  (map-get? shipment-disputes shipment-id)
 )
 
 (define-public (authorize-carrier (carrier principal))
@@ -290,5 +310,57 @@
     (asserts! (is-eq tx-sender contract-owner) err-owner-only)
     (try! (nft-transfer? shipment-receipt shipment-id current-owner new-owner))
     (ok true)
+  )
+)
+
+(define-public (raise-dispute
+  (shipment-id uint)
+  (reason (string-ascii 500))
+)
+  (let
+    (
+      (shipment (unwrap! (map-get? shipments shipment-id) err-shipment-not-found))
+      (current-block stacks-block-height)
+      (existing-dispute (map-get? shipment-disputes shipment-id))
+    )
+    (asserts! (is-none existing-dispute) err-dispute-exists)
+    (asserts! 
+      (or 
+        (is-eq tx-sender (get shipper shipment))
+        (is-eq tx-sender (get receiver shipment))
+      ) 
+      err-unauthorized
+    )
+    (ok (map-set shipment-disputes shipment-id {
+      raised-by: tx-sender,
+      reason: reason,
+      raised-at: current-block,
+      resolved: false,
+      resolution: none,
+      resolved-at: none,
+      resolved-by: none
+    }))
+  )
+)
+
+(define-public (resolve-dispute
+  (shipment-id uint)
+  (resolution (string-ascii 500))
+)
+  (let
+    (
+      (dispute (unwrap! (map-get? shipment-disputes shipment-id) err-dispute-not-found))
+      (current-block stacks-block-height)
+    )
+    (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+    (asserts! (not (get resolved dispute)) err-dispute-resolved)
+    (ok (map-set shipment-disputes shipment-id 
+      (merge dispute {
+        resolved: true,
+        resolution: (some resolution),
+        resolved-at: (some current-block),
+        resolved-by: (some tx-sender)
+      })
+    ))
   )
 )
